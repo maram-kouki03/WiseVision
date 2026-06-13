@@ -1,0 +1,101 @@
+================================================================
+ SOLUTION 2 — last.py  (ByteTrack pipeline)
+================================================================
+Same goal as Solution 1 (detect people, label SELLER vs CLIENTS, count clients
+entering, detect interactions), but the tracker is ByteTrack (yolox) instead of
+BoT-SORT. This is the simpler / earlier version of the pipeline.
+
+KEY DIFFERENCE vs Solution 1:
+  ByteTrack associates by MOTION + IoU only (NO appearance/ReID).
+  The seller is chosen by a TEMPORAL lock (first person seen in a time window),
+  and counting uses a single side-of-line test (no hysteresis band).
+
+----------------------------------------------------------------
+ 1. PIPELINE OVERVIEW
+----------------------------------------------------------------
+
+   video frame
+       |
+       v
+  +-----------+  person boxes  +-------------+  track IDs   +---------------+
+  |  YOLO     | -------------> | ByteTrack   | -----------> | match tracks  |
+  | (detect)  |               | (yolox)     |              | <-> detections|
+  +-----------+               +-------------+              +---------------+
+                                (Kalman motion + IoU)              |
+                                                                   v
+                                                           +---------------+
+                                                           | RoleTracker   |
+                                                           | first_pid +   |
+                                                           | SELLER/CLIENT |
+                                                           +---------------+
+                                                                   |
+                       +-------------------------------------------+
+                       v
+              +-------------------+      +------------------+      +-------------+
+              | Seller = first    | ---> | Line counting    | ---> | Interaction |
+              | person in window  |      | (side of LINE1)  |      |  detection  |
+              +-------------------+      +------------------+      +-------------+
+                       |
+                       v
+                draw + write output video
+
+----------------------------------------------------------------
+ 2. DETECTION + TRACKING
+----------------------------------------------------------------
+- YOLO ("yolo11m.pt") detects people each processed frame (every SKIP-th).
+- BYTETracker (yolox) updates with the boxes and returns tracks; it keeps low-
+  confidence boxes for a second association pass (ByteTrack's core idea) to
+  hold tracks through brief drops. Pure motion+IoU, no appearance.
+- match_detections_with_tracks() maps each track's box back onto the original
+  detection (by IoU) to attach a track ID to each detection.
+
+----------------------------------------------------------------
+ 3. RoleTracker  (stable identity + role)   [same module idea as Solution 1]
+----------------------------------------------------------------
+- Adds a stable "first_pid" on top of ByteTrack IDs and chains them through
+  switches (bt_to_first_pid, evicted cache, stale rescue).
+- Duplicate suppression: a new box too close to / overlapping a matched one
+  (dist<CLIENT_RADIUS OR IoU>0.7) is dropped (no double IDs).
+- Roles: SELLER or CLIENT.
+
+----------------------------------------------------------------
+ 4. SELLER SELECTION  (temporal lock)
+----------------------------------------------------------------
+   The FIRST new person detected within SELLER_LOCK_WINDOW_SECONDS is locked
+   as the SELLER:
+
+        if (not seller_locked) and (timestamp <= seller_window):
+              role = SELLER ; seller_locked = True
+
+   Simple, but fragile: it assumes the seller is present first and never
+   re-evaluates. (Solution 1 replaces this with the persistence cue.)
+
+----------------------------------------------------------------
+ 5. LINE COUNTING  (single side-of-line test)
+----------------------------------------------------------------
+   is_in_side(center, LINE1) returns which side of the line the person is on.
+   A client is counted when that side flips in the entering direction.
+   (Solution 1 upgrades this to a margin/hysteresis state machine that resists
+    jitter and frame-skips.)
+
+----------------------------------------------------------------
+ 6. INTERACTION DETECTION
+----------------------------------------------------------------
+- A CLIENT within INTERACTION_DIST of the SELLER for a few seconds is recorded
+  as one seller<->client interaction.
+
+----------------------------------------------------------------
+ 7. RUNNING
+----------------------------------------------------------------
+- last.py does `sys.path.append('./ByteTrack')` then imports
+  yolox.tracker.byte_tracker, so RUN IT FROM INSIDE bytetrack-version/ (where
+  the ByteTrack/ folder lives). See requirements2.txt.
+
+----------------------------------------------------------------
+ 8. WHICH VERSION TO USE
+----------------------------------------------------------------
+- Solution 1 (BoT-SORT) is the stronger pipeline: appearance-aware tracking,
+  persistence-based seller, robust hysteresis counting.
+- Solution 2 (ByteTrack) is lighter and dependency-heavier to set up (yolox),
+  with motion-only tracking and the simpler seller/counting logic. Kept for
+  comparison / as the original baseline.

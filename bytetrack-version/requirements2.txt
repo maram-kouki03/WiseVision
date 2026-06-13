@@ -1,0 +1,29 @@
+# ============================================================
+#  bytetrack-version  —  Python dependencies
+# ============================================================
+# PyTorch is a CUDA build on the dev machine (2.7.1+cu118). Install torch FIRST
+# from the matching wheel index, then `pip install -r requirements2.txt`:
+#
+#   GPU (CUDA 11.8):
+#     pip install torch==2.7.1+cu118 torchvision==0.22.1+cu118 \
+#         --extra-index-url https://download.pytorch.org/whl/cu118
+#   CPU only:
+#     pip install torch==2.7.1 torchvision==0.22.1
+#
+# The ByteTrack tracker (yolox) is the bundled ./ByteTrack submodule. last.py
+# imports it via `sys.path.append('./ByteTrack')`, so RUN last.py FROM INSIDE
+# this folder (bytetrack-version/). No `pip install` of yolox is required, but
+# its runtime deps (below) must be present. For yolox's full extras run:
+#     pip install -r ByteTrack/requirements.txt
+# ------------------------------------------------------------
+torch==2.7.1
+torchvision==0.22.1
+ultralytics==8.4.66          # YOLO person detector
+supervision==0.28.0          # video IO, Detections, drawing
+opencv-python==4.13.0.92
+numpy==2.2.6
+onemetric==0.1.2             # box_iou_batch
+# --- ByteTrack (yolox) runtime deps ---
+lap==0.5.13                  # linear assignment in byte_tracker
+scipy==1.15.3
+loguru==0.7.3

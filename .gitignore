@@ -35,7 +35,22 @@ main1_bytetrack.py
 .DS_Store
 Thumbs.db
 
-# Logs / output
+# Logs
 *.log
-*.txt
-!requirements.txt
+
+# Photos / diagnostic crops — ignore all images EXCEPT the seller reference
+*.png
+*.jpg
+*.jpeg
+seller_calib/
+seller_calib2/
+seller_diag/
+seller_diag2/
+seller_full/
+seller_gt/
+seller_ref2/
+!bot-sort-version/reference_image/
+!bot-sort-version/reference_image/*
+
+# NOTE: requirements*.txt and solution*.txt are intentionally tracked
+# (no global *.txt ignore).

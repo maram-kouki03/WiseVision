@@ -1,0 +1,141 @@
+================================================================
+ SOLUTION 1 — bot-sort.py  (BoT-SORT + OSNet ReID pipeline)
+================================================================
+Goal: in a boutique CCTV video, detect people, keep stable IDs, label the
+SELLER vs CLIENTS, count clients entering, and detect seller<->client
+interactions.
+
+----------------------------------------------------------------
+ 1. PIPELINE OVERVIEW
+----------------------------------------------------------------
+
+   video frame
+       |
+       v
+  +-----------+   person boxes   +-----------------+  clean boxes
+  |  YOLO     | ---------------> | crop-quality    | ------------+
+  | (detect)  |                  | gate            |             |
+  +-----------+                  +-----------------+             v
+                                      (drop tiny / wide /   +-----------+
+                                       merged boxes)        | BoT-SORT  |
+                                                            | + OSNet   |
+                                                            |  ReID     |
+                                                            +-----------+
+                                                                 | track IDs
+                                                                 v
+                                                          +---------------+
+                                                          | RoleTracker   |
+                                                          | stable first_ |
+                                                          | pid + roles   |
+                                                          +---------------+
+                                                                 |
+                       +-----------------------------------------+
+                       v
+              +-------------------+      +------------------+      +-------------+
+              | Seller anchor     | ---> | Line counting    | ---> | Interaction |
+              | (who is SELLER)   |      | (hysteresis)     |      |  detection  |
+              +-------------------+      +------------------+      +-------------+
+                       |
+                       v
+                draw + write output video
+
+----------------------------------------------------------------
+ 2. DETECTION + CROP-QUALITY GATE
+----------------------------------------------------------------
+- YOLO ("best 26m.pt") returns person boxes each processed frame
+  (every SKIP-th frame is processed; the rest just re-draw the last result).
+- good_crop_mask() keeps only boxes that are tall enough, large enough, and
+  not over-wide. A wide box usually spans TWO overlapping people and would
+  feed a polluted crop to the ReID model. Filtered boxes simply get no track
+  ID that frame (they still pass to RoleTracker as unmatched).
+
+       box ok?  height>=H  AND  area>=A  AND  width/height<=R   -> feed to tracker
+                                                       else      -> skip (noise)
+
+----------------------------------------------------------------
+ 3. BoT-SORT + OSNet ReID  (stable track IDs)
+----------------------------------------------------------------
+- Built via boxmot create_tracker("botsort", ...). OSNet-AIN ReID model gives
+  each detection an appearance embedding; BoT-SORT combines motion (Kalman) +
+  IoU + appearance to assign track IDs that survive short occlusions.
+- The tracker returns rows (x1,y1,x2,y2, id, conf, cls, det_index). det_index
+  maps each track back onto the ORIGINAL detection (keep_idx remap).
+
+----------------------------------------------------------------
+ 4. RoleTracker  (stable identity + SELLER/CLIENT role)
+----------------------------------------------------------------
+- Wraps a stable "first_pid" on top of BoT-SORT IDs (chains IDs through
+  switches via bt_to_first_pid, an evicted-cache, and stale-person rescue).
+- Duplicate suppression: a new detection too close to / overlapping an already
+  matched one (dist<CLIENT_RADIUS OR IoU>0.7) is treated as a double and
+  dropped, so one person does not spawn two IDs.
+- Roles are SELLER or CLIENT.
+
+----------------------------------------------------------------
+ 5. SELLER ANCHOR  —  who is the seller?   (layered cascade)
+----------------------------------------------------------------
+Appearance is WEAK on this low-res/distant footage (different people look
+~0.8 similar to the ReID model), so the robust cue is PERSISTENCE.
+
+   per frame, for each enabled cue (first CONFIDENT one wins):
+
+   (1) ReID photo-match   [USE_SELLER_REID]   -- EXPERIMENTAL / weak here
+         compare each detection to reference photos of the seller.
+   (2) Persistence        [USE_SELLER_PERSISTENCE]  <-- the reliable one
+         the identity present the LONGEST is the seller.
+   (3) White uniform      [USE_SELLER_UNIFORM]  -- legacy / off
+         the whitest torso.
+         |
+         v
+   if a cue is confident -> that person = SELLER, the rest = CLIENT
+   else                  -> RoleTracker's own seller decision stays
+
+ PERSISTENCE (the one that works):
+   presence[first_pid] += 1   every frame the identity is seen
+   seller = identity with the most presence, once it
+            (a) clears SELLER_MIN_FRAMES  and
+            (b) leads the runner-up by >= SELLER_LEAD_RATIO
+   -> "the person who has been here the longest is the seller"
+   -> robust to ID switches; works for 1 (or, by raising it to top-N, several)
+
+----------------------------------------------------------------
+ 6. LINE COUNTING  (single line + hysteresis state machine)
+----------------------------------------------------------------
+- One counting line (LINE1). For each CLIENT we track which side they are on,
+  with a margin band so jitter near the line cannot double-count.
+
+      d = signed distance of person-center to the line
+      d > +MARGIN  -> side = "in"
+      d < -MARGIN  -> side = "out"
+      |d| <= MARGIN -> keep previous side (dead-band)
+
+      out --> in   : in_count  += 1   (entered)
+      in  --> out  : out_count += 1   (left)
+
+  No timing window, so frame-skips can't break a crossing. Sellers are skipped.
+
+----------------------------------------------------------------
+ 7. INTERACTION DETECTION
+----------------------------------------------------------------
+- A CLIENT within INTERACTION_DIST of the SELLER for >= a few seconds is
+  recorded as one seller<->client interaction.
+
+----------------------------------------------------------------
+ 8. KEY TUNABLES (top of bot-sort.py)
+----------------------------------------------------------------
+  SKIP                 process every Nth frame (speed vs accuracy)
+  CROP_MIN_HEIGHT/AREA/MAX_ASPECT   crop-quality gate
+  TRACK_BUFFER, *_THRESH, APPEARANCE_EMA_ALPHA   BoT-SORT/ReID tuning
+  CLIENT_RADIUS        duplicate-suppression radius (identity creation)
+  SELLER_MIN_FRAMES / SELLER_LEAD_RATIO   persistence seller lock
+  COUNT_MARGIN_PX      counting hysteresis band
+  INTERACTION_DIST     seller<->client proximity for an interaction
+
+----------------------------------------------------------------
+ 9. NOTE ON THE FOOTAGE (why appearance is limited)
+----------------------------------------------------------------
+People are small/distant/warm-lit, so ReID embeddings are weakly
+discriminative: clearly separated people separate well (~0.43 vs ~0.90 for
+same person), but overlapping/occluded people, and the (visually generic)
+seller, do not. Hence identity/seller logic leans on geometry + persistence,
+not appearance. The real lift would be a closer / higher-resolution camera.
